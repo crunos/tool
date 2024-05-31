@@ -1,0 +1,111 @@
+#!/bin/sh
+
+# needed for some binaries
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
+
+BIN=/bin/busybox
+
+
+# disable kernel logging to stdout...
+#$BIN dmesg -n 1
+
+
+# proc, sysfs
+$BIN mount -t proc proc /proc
+$BIN mount -n -t sysfs -o nodev,noexec,nosuid sysfs /sys
+
+
+# devfs
+$BIND mount -t devtmpfs -o exec,nosuid,mode=0755,size=2M devtmpfs /dev 2>/dev/null || $BIN mount -t tmpfs -o exec,nosuid,mode=0755,size=2M tmpfs /dev
+
+[ -c /dev/ptmx ] || $BIN mknod -m 666 /dev/ptmx c 5 2
+
+[ -d /dev/pts ] || $BIN mkdir -m 755 /dev/pts
+$BIN mount -t devpts -o gid=5,mode=0620,noexec,nosuid devpts /dev/pts
+
+# shared memory area (later system will need it)
+[ -d /dev/shm ] || $BIN mkdir /dev/shm
+$BIN mount -t tmpfs -o nodev,nosuid,noexec shm /dev/shm
+
+
+# cgroup
+$BIN mount -n -t tmpfs -o nodev,noexec,nosuid,mode=755,size=64k cgroup_root /sys/fs/cgroup
+$BIN mount -t cgroup2 none /sys/fs/cgroup/            # cgroup v2 kernel 5.x
+#mount -t cgroup -o all cgroup /sys/fs/cgroup # cgroup v1
+
+
+# detect hardware and initialize drivers
+$BIN grep -h MODALIAS /sys/bus/*/devices/*/uevent | $BIN cut -d= -f2 | $BIN xargs modprobe -abq 2> /dev/null
+$BIN grep -h MODALIAS /sys/bus/*/devices/*/uevent | $BIN cut -d= -f2 | $BIN xargs modprobe -abq 2> /dev/null
+
+
+# read kernel cmdline arguments
+for karg in $($BIN cat /proc/cmdline); do
+    export $karg
+done
+
+
+# populate /dev with urandom, ...
+$BIN mdev -s
+
+
+# networking
+if [ "$myip" == "dhcp" ]; then
+    $BIN ip link set up dev eth0
+    $BIN udhcpc
+elif [ "$myip" != "" ]; then
+    $BIN ip link set up dev eth0
+    $BIN ip a a $myip dev eth0
+    $BIN ip r a default via $mygw
+fi
+
+
+# prepare newroot
+ROOTFS=/newroot
+$BIN mkdir $ROOTFS
+$BIN mount -t tmpfs -o size=512M tmpfs $ROOTFS
+
+# prepare overlay root
+#$BIN mkdir -p /mnt/upper /mnt/work /mnt/root $ROOTFS
+#$BIN mount -t squashfs /squash-squashfs.img /mnt/root -o loop
+#$BIN mount -t overlay overlay -o lowerdir=/mnt/root,upperdir=/mnt/upper,workdir=/mnt/work $ROOTFS
+
+### WORKAROUND create rootfs from initrd rootfs...
+#$BIN tar -C $ROOTFS -xzf /rootfs.tar.gz
+$BIN tar -c -O --exclude "proc/*" --exclude "dev/*" --exclude "tmp/*" --exclude "sys/*" --exclude "newroot" --exclude "init" / | $BIN tar -xf - -C $ROOTFS
+
+# move inittab, static lvm2
+#$BIN cp -a /inittab $ROOTFS/etc/
+#$BIN cp -a /lvm.static $ROOTFS/sbin/
+
+# workaround kernel modules
+#$BIN cp -a /lib/modules $ROOTFS/lib/
+
+# install static lvm2 commands...
+#LVM_CMDS=$(/lvm.static --help 2>&1 >/dev/null | $BIN awk 'NR > 3 {print $1}' | $BIN grep -v '^$')
+#for CMD in $(echo $LVM_CMDS); do 
+#    $BIN chroot $ROOTFS /bin/busybox ln -s /sbin/lvm.static /sbin/$CMD
+#done
+
+# switch root and hand over to busybox init
+$BIN mount --move /sys $ROOTFS/sys
+$BIN mount --move /proc $ROOTFS/proc
+$BIN mount --move /dev $ROOTFS/dev
+
+# activate "nerdos" vg / lv
+#$BIN chroot $ROOTFS /sbin/vgchange -a y nerdos
+
+# mount persist...
+#$BIN chroot $ROOTFS mkdir -p /var/persist
+#$BIN chroot $ROOTFS mount /dev/nerdos/persist /var/persist 
+#$BIN chroot $ROOTFS ln -s /var/persist/docker /var/lib/
+#$BIN chroot $ROOTFS ln -s /var/persist/engine/* /usr/bin/
+
+# switch root...
+exec $BIN switch_root $ROOTFS /bin/busybox init
+
+
+# should never be called...
+echo "Failed to SWITCH ROOT... You need to take a look from emergency shell
+$BIN install -s
+$BIN sh
