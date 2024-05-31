@@ -9,8 +9,8 @@ init:
 
 files: 
   - path: /init
-    source: "src/files/init"
+    source: "files/init"
     mode: "0755"
   - path: /etc/inittab
-    source: "src/files/inittab"
+    source: "files/inittab"
     mode: "0755"
